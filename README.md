@@ -77,5 +77,34 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 迟到用量调整与账期对账
+
+补到的调用明细（如十月最后一晚的请求十一月才补到）由 `usage_billing` 服务的
+`backfill_usage` 接收，按期判定结算口径并产出可对账的迟到用量调整明细
+（`data/late_adjustments/`，幂等键去重，重放不重复计费）：
+
+- **当期更正**：实际发生月账期尚未确认，用量并入原账期账单，随该账期一起结算；
+  调整明细在复核后回链结算凭证，不产生凭证外差额（避免双重计费）。
+- **跨期调整**：实际发生月账期已确认（结算凭证 `frozen=true` 不可变），原单与
+  历史明细一律不改，差额经复核确认后计入当前归入账期，调整明细保留
+  `origin_voucher_no`（原结算凭证）与 `settlement_voucher_no`（入账凭证）闭合追溯链。
+- 结算凭证（`data/usage/_settlement_<账期>.json`）冻结后重复结算返回同一凭证，
+  `original_*` 永不改写，`total_* = original_* + 跨期迟到差额`。
+- 对账接口沿调整明细可查实际发生月（`occurrence_cycle`）、当前归入账期
+  （`applied_cycle`）与原结算凭证；跨账期合计按幂等键去重，同笔只记一次。
+
+专用接口（`backend/app/routers/billing.py`）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/usage-billing/backfill` | 补录迟到调用，返回口径判定与说明 |
+| GET | `/api/usage-billing/late-adjustments` | 调整明细查询（发生月/归入账期/复核状态） |
+| POST | `/api/usage-billing/late-adjustments/{id}/review` | 复核确认/驳回 |
+| GET | `/api/usage-billing/vouchers/{cycle}` | 账期结算凭证（原账单+迟到差额+最终口径） |
+| GET | `/api/usage-billing/reconciliation?cycles=2026-10,2026-11` | 跨期对账单 |
+
+前端「迟到调整对账」页（`/usage_billing/late-adjustments`）支持补录、复核与
+跨期对账；规则测试见 `backend/tests/test_late_usage_adjustment.py`。
+
 领域：数据工程
 子方向：数据分析与数据应用
